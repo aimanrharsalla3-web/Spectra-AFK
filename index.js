@@ -1,209 +1,243 @@
-import discord
-from discord.ext import commands, tasks
-from discord import app_commands
-import json
-import os
-import time
-import re
-from datetime import timedelta
+// index.js
+const { Client, GatewayIntentBits, Partials, Collection, Events, REST, Routes } = require('discord.js');
+const fs = require('fs');
+require('dotenv').config();
 
-# ===== TOKEN =====
-TOKEN = os.getenv("TOKEN")
-AFK_CHANNEL_ID = int(os.getenv("AFK_CHANNEL_ID", 0))  # ID del canal de voz para AFK
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildVoiceStates
+    ],
+    partials: [Partials.Channel]
+});
 
-# ===== INTENTS =====
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
-intents.guilds = True
-intents.voice_states = True
+// ===== BASE DE DATOS =====
+let data = {};
+if (fs.existsSync('data.json')) {
+    data = JSON.parse(fs.readFileSync('data.json'));
+}
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+function saveData() {
+    fs.writeFileSync('data.json', JSON.stringify(data, null, 4));
+}
 
-# ===== BASE DE DATOS =====
-if os.path.exists("data.json"):
-    with open("data.json", "r") as f:
-        data = json.load(f)
-else:
-    data = {}
+// ===== VARIABLES AFK =====
+let afkChannelId = process.env.AFK_CHANNEL_ID; // ID del canal de voz para AFK
+let afkConnection = null;
+let afkStart = null;
 
-def save_data():
-    with open("data.json", "w") as f:
-        json.dump(data, f, indent=4)
+// ===== MAPAS DEFENSA =====
+const spamMap = new Map();
+const joinMap = new Map();
+const channelMap = new Map();
+const linkRegex = /(https?:\/\/|www\.|discord\.gg)/i;
 
-# ===== CONFIG ANTI LINKS =====
-link_regex = re.compile(r"(https?:\/\/|www\.|discord\.gg)", re.IGNORECASE)
+// ===== FUNCIONES =====
+function log(guild, message) {
+    if (data[guild.id] && data[guild.id].logs) {
+        const channel = guild.channels.cache.get(data[guild.id].logs);
+        if (channel) channel.send(`📜 ${message}`);
+    }
+}
 
-# ===== MAPAS PARA DEFENSA =====
-spam_map = {}
-join_map = {}
-channel_map = {}
+// ===== AFK VOICE =====
+async function joinAFK() {
+    if (!afkChannelId) return;
+    for (const guild of client.guilds.cache.values()) {
+        const channel = guild.channels.cache.get(afkChannelId);
+        if (channel && channel.isVoiceBased()) {
+            try {
+                afkConnection = await channel.join();
+                afkStart = Date.now();
+                console.log(`Conectado al canal AFK: ${channel.name}`);
+            } catch (err) {
+                console.log('Error al unirse al canal AFK:', err);
+            }
+        }
+    }
+}
 
-# ===== VARIABLES AFK =====
-afk_member = None
-afk_start = None
+// ===== EVENTOS =====
+client.on('ready', async () => {
+    console.log(`Bot AFK listo como ${client.user.tag}`);
+    await joinAFK();
 
-# ===== FUNCIONES DE LOG =====
-def log(guild, mensaje):
-    guild_id = str(guild.id)
-    if guild_id in data and "logs" in data[guild_id]:
-        channel = guild.get_channel(data[guild_id]["logs"])
-        if channel:
-            bot.loop.create_task(channel.send(f"📜 {mensaje}"))
+    // Registrar comandos slash
+    const commands = [
+        {
+            name: 'announce',
+            description: 'Anunciar en un canal',
+            options: [
+                { name: 'canal', type: 7, description: 'Canal donde enviar el anuncio', required: true },
+                { name: 'mensaje', type: 3, description: 'Mensaje del anuncio', required: true }
+            ]
+        },
+        {
+            name: 'setlogs',
+            description: 'Configurar canal de logs',
+            options: [
+                { name: 'canal', type: 7, description: 'Canal de logs', required: true }
+            ]
+        },
+        {
+            name: 'autorole',
+            description: 'Configurar autorole',
+            options: [
+                { name: 'rol', type: 8, description: 'Rol a asignar', required: true },
+                { name: 'accion', type: 3, description: 'add o remove', required: true }
+            ]
+        },
+        {
+            name: 'whitelist',
+            description: 'Permitir dominio en anti-links',
+            options: [
+                { name: 'dominio', type: 3, description: 'Dominio permitido', required: true }
+            ]
+        }
+    ];
 
-# ===== EVENTOS =====
-@bot.event
-async def on_ready():
-    global afk_member, afk_start
-    print(f"Bot conectado como {bot.user}")
-    # Intentar unirse al canal AFK
-    if AFK_CHANNEL_ID != 0:
-        for g in bot.guilds:
-            channel = g.get_channel(AFK_CHANNEL_ID)
-            if channel:
-                afk_member = await channel.connect()
-                afk_start = time.time()
-                print(f"Conectado al canal AFK: {channel.name}")
-    await bot.tree.sync()
-    print("Slash commands sincronizados.")
+    const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
+    try {
+        console.log('Registrando comandos slash...');
+        await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+        console.log('Comandos slash listos.');
+    } catch (err) {
+        console.log('Error al registrar comandos:', err);
+    }
+});
 
-@bot.event
-async def on_message(message):
-    if message.author.bot or not message.guild:
-        return
+// ===== ON MESSAGE =====
+client.on('messageCreate', async message => {
+    if (message.author.bot || !message.guild) return;
 
-    # Aquí puedes mantener tu código AFK original si tenía algún comando de mensajes
-    # Ejemplo: mostrar tiempo AFK, responder "AFK", etc.
-    # Si no tienes nada, esta sección queda vacía y se usa para la defensa
+    // Ignorar administradores
+    if (message.member.permissions.has('Administrator')) return;
 
-    # ===== DEFENSA =====
-    guild_id = str(message.guild.id)
-    user_id = message.author.id
-    now = time.time()
+    const guildId = message.guild.id;
+    const userId = message.author.id;
+    const now = Date.now();
 
-    # Ignorar admins
-    if message.author.guild_permissions.administrator:
-        await bot.process_commands(message)
-        return
+    // --- ANTI SPAM ---
+    if (!spamMap.has(userId)) spamMap.set(userId, []);
+    let userTimes = spamMap.get(userId).filter(t => now - t < 5000);
+    userTimes.push(now);
+    spamMap.set(userId, userTimes);
+    if (userTimes.length >= 6) {
+        message.member.timeout(10000, 'Spam detectado').catch(() => {});
+        message.channel.send(`⚠️ ${message.author} spam detectado.`);
+        log(message.guild, `Spam detectado: ${message.author.tag}`);
+        spamMap.set(userId, []);
+    }
 
-    # --- Anti spam ---
-    if user_id not in spam_map:
-        spam_map[user_id] = []
-    spam_map[user_id].append(now)
-    spam_map[user_id] = [t for t in spam_map[user_id] if now - t < 5]
-    if len(spam_map[user_id]) >= 6:
-        await message.author.timeout(discord.utils.utcnow() + timedelta(seconds=10))
-        await message.channel.send(f"⚠️ {message.author.mention} spam detectado.")
-        log(message.guild, f"Spam detectado: {message.author}")
-        spam_map[user_id] = []
+    // --- ANTI MASS MENTION ---
+    if (message.mentions.members.size >= 5) {
+        message.reply('⚠️ No menciones a tantas personas.');
+    }
 
-    # --- Anti mass mention ---
-    if len(message.mentions) >= 5:
-        await message.reply("⚠️ No menciones a tantas personas.")
+    // --- ANTI LINKS ---
+    if (linkRegex.test(message.content)) {
+        let whitelist = (data[guildId] && data[guildId].whitelist) || [];
+        if (!whitelist.some(d => message.content.includes(d))) {
+            message.delete().catch(() => {});
+            const warnMsg = await message.channel.send(`🚫 ${message.author} no se permiten enlaces.`);
+            log(message.guild, `Link eliminado de ${message.author.tag}: ${message.content}`);
+            message.member.timeout(5000).catch(() => {});
+            setTimeout(() => warnMsg.delete().catch(() => {}), 5000);
+        }
+    }
+});
 
-    # --- Anti links ---
-    if link_regex.search(message.content):
-        whitelist = data.get(guild_id, {}).get("whitelist", [])
-        if not any(domain in message.content for domain in whitelist):
-            await message.delete()
-            warn_msg = await message.channel.send(
-                f"🚫 {message.author.mention} no se permiten enlaces."
-            )
-            log(message.guild, f"Link eliminado de {message.author}: {message.content}")
-            await message.author.timeout(discord.utils.utcnow() + timedelta(seconds=5))
-            await warn_msg.delete(delay=5)
+// ===== ANTI RAID / AUTOROLE =====
+client.on('guildMemberAdd', member => {
+    const guildId = member.guild.id;
+    const now = Date.now();
 
-    await bot.process_commands(message)
+    if (!joinMap.has(guildId)) joinMap.set(guildId, []);
+    let times = joinMap.get(guildId).filter(t => now - t < 10000);
+    times.push(now);
+    joinMap.set(guildId, times);
 
-@bot.event
-async def on_member_join(member):
-    guild_id = str(member.guild.id)
-    now = time.time()
-    if guild_id not in join_map:
-        join_map[guild_id] = []
-    join_map[guild_id].append(now)
-    join_map[guild_id] = [t for t in join_map[guild_id] if now - t < 10]
+    if (times.length >= 5) {
+        if (member.guild.systemChannel) member.guild.systemChannel.send('🚨 Posible RAID detectado.');
+        log(member.guild, '🚨 Posible RAID detectado.');
+    }
 
-    if len(join_map[guild_id]) >= 5:
-        if member.guild.system_channel:
-            await member.guild.system_channel.send("🚨 Posible RAID detectado.")
-        log(member.guild, "🚨 Posible RAID detectado.")
+    // --- AUTOROLE ---
+    if (data[guildId] && data[guildId].autorole) {
+        const role = member.guild.roles.cache.get(data[guildId].autorole);
+        if (role) member.roles.add(role).catch(() => {});
+    }
+});
 
-    # --- Autorole ---
-    if guild_id in data and "autorole" in data[guild_id]:
-        role = member.guild.get_role(data[guild_id]["autorole"])
-        if role:
-            await member.add_roles(role)
+// ===== ANTI NUKE =====
+client.on('channelCreate', channel => handleChannel(channel.guild));
+client.on('channelDelete', channel => handleChannel(channel.guild));
+function handleChannel(guild) {
+    const guildId = guild.id;
+    const now = Date.now();
 
-@bot.event
-async def on_guild_channel_create(channel):
-    await handle_channel(channel.guild)
+    if (!channelMap.has(guildId)) channelMap.set(guildId, []);
+    let times = channelMap.get(guildId).filter(t => now - t < 10000);
+    times.push(now);
+    channelMap.set(guildId, times);
 
-@bot.event
-async def on_guild_channel_delete(channel):
-    await handle_channel(channel.guild)
+    if (times.length >= 5) {
+        if (guild.systemChannel) guild.systemChannel.send('🚨 Posible NUKE detectado.');
+        log(guild, '🚨 Posible NUKE detectado.');
+    }
+}
 
-async def handle_channel(guild):
-    guild_id = str(guild.id)
-    now = time.time()
-    if guild_id not in channel_map:
-        channel_map[guild_id] = []
-    channel_map[guild_id].append(now)
-    channel_map[guild_id] = [t for t in channel_map[guild_id] if now - t < 10]
-    if len(channel_map[guild_id]) >= 5:
-        if guild.system_channel:
-            await guild.system_channel.send("🚨 Posible NUKE detectado.")
-        log(guild, "🚨 Posible NUKE detectado.")
+// ===== INTERACTIONS =====
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isChatInputCommand()) return;
 
-# ===== SLASH COMMANDS =====
-@bot.tree.command(name="announce", description="Anunciar en un canal")
-@app_commands.checks.has_permissions(administrator=True)
-async def announce(interaction: discord.Interaction, canal: discord.TextChannel, mensaje: str):
-    await canal.send(f"📢 **ANUNCIO**\n{mensaje}")
-    await interaction.response.send_message("✅ Anuncio enviado.", ephemeral=True)
+    const guildId = interaction.guild.id;
 
-@bot.tree.command(name="setlogs", description="Configurar canal de logs")
-@app_commands.checks.has_permissions(administrator=True)
-async def setlogs(interaction: discord.Interaction, canal: discord.TextChannel):
-    guild_id = str(interaction.guild.id)
-    if guild_id not in data:
-        data[guild_id] = {}
-    data[guild_id]["logs"] = canal.id
-    save_data()
-    await interaction.response.send_message("✅ Canal de logs configurado.", ephemeral=True)
+    if (interaction.commandName === 'announce') {
+        const canal = interaction.options.getChannel('canal');
+        const mensaje = interaction.options.getString('mensaje');
+        canal.send(`📢 **ANUNCIO**\n${mensaje}`);
+        interaction.reply({ content: '✅ Anuncio enviado.', ephemeral: true });
+    }
 
-@bot.tree.command(name="autorole", description="Configurar autorole")
-@app_commands.checks.has_permissions(administrator=True)
-async def autorole(interaction: discord.Interaction, rol: discord.Role, accion: str):
-    guild_id = str(interaction.guild.id)
-    if guild_id not in data:
-        data[guild_id] = {}
-    if accion.lower() == "add":
-        data[guild_id]["autorole"] = rol.id
-    else:
-        data[guild_id].pop("autorole", None)
-    save_data()
-    await interaction.response.send_message("✅ Configuración actualizada.", ephemeral=True)
+    if (interaction.commandName === 'setlogs') {
+        const canal = interaction.options.getChannel('canal');
+        if (!data[guildId]) data[guildId] = {};
+        data[guildId].logs = canal.id;
+        saveData();
+        interaction.reply({ content: '✅ Canal de logs configurado.', ephemeral: true });
+    }
 
-@bot.tree.command(name="whitelist", description="Permitir dominio en anti links")
-@app_commands.checks.has_permissions(administrator=True)
-async def whitelist(interaction: discord.Interaction, dominio: str):
-    guild_id = str(interaction.guild.id)
-    if guild_id not in data:
-        data[guild_id] = {}
-    if "whitelist" not in data[guild_id]:
-        data[guild_id]["whitelist"] = []
-    data[guild_id]["whitelist"].append(dominio.lower())
-    save_data()
-    await interaction.response.send_message(f"✅ Dominio permitido: {dominio}", ephemeral=True)
+    if (interaction.commandName === 'autorole') {
+        const rol = interaction.options.getRole('rol');
+        const accion = interaction.options.getString('accion');
+        if (!data[guildId]) data[guildId] = {};
+        if (accion.toLowerCase() === 'add') data[guildId].autorole = rol.id;
+        else delete data[guildId].autorole;
+        saveData();
+        interaction.reply({ content: '✅ Configuración de autorole actualizada.', ephemeral: true });
+    }
 
-# ===== TASK PARA CONTAR TIEMPO AFK =====
-@tasks.loop(seconds=5)
-async def afk_timer():
-    global afk_start
-    if afk_start:
-        elapsed = int(time.time() - afk_start)
-        # Aquí puedes usar elapsed si quieres mostrar el tiempo AFK en logs o embed
-afk_timer.start()
+    if (interaction.commandName === 'whitelist') {
+        const dominio = interaction.options.getString('dominio').toLowerCase();
+        if (!data[guildId]) data[guildId] = {};
+        if (!data[guildId].whitelist) data[guildId].whitelist = [];
+        data[guildId].whitelist.push(dominio);
+        saveData();
+        interaction.reply({ content: `✅ Dominio permitido: ${dominio}`, ephemeral: true });
+    }
+});
 
-bot.run(TOKEN)
+// ===== TASK PARA AFK TIMER =====
+setInterval(() => {
+    if (afkStart) {
+        const elapsed = Math.floor((Date.now() - afkStart) / 1000);
+        // console.log(`Tiempo AFK: ${elapsed}s`);
+    }
+}, 5000);
+
+// ===== LOGIN =====
+client.login(process.env.TOKEN);
