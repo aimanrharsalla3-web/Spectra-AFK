@@ -8,8 +8,8 @@ import re
 from datetime import timedelta
 
 # ===== TOKEN =====
-# Pon tu token en variable de entorno: TOKEN
 TOKEN = os.getenv("TOKEN")
+AFK_CHANNEL_ID = int(os.getenv("AFK_CHANNEL_ID", 0))  # ID del canal de voz para AFK
 
 # ===== INTENTS =====
 intents = discord.Intents.default()
@@ -39,20 +39,27 @@ spam_map = {}
 join_map = {}
 channel_map = {}
 
-# ===== AFK / LLAMADA =====
-afk_channel_id = int(os.getenv("AFK_CHANNEL_ID", 0))  # pon el ID del canal de voz
+# ===== VARIABLES AFK =====
 afk_member = None
 afk_start = None
 
+# ===== FUNCIONES DE LOG =====
+def log(guild, mensaje):
+    guild_id = str(guild.id)
+    if guild_id in data and "logs" in data[guild_id]:
+        channel = guild.get_channel(data[guild_id]["logs"])
+        if channel:
+            bot.loop.create_task(channel.send(f"📜 {mensaje}"))
+
+# ===== EVENTOS =====
 @bot.event
 async def on_ready():
     global afk_member, afk_start
     print(f"Bot conectado como {bot.user}")
     # Intentar unirse al canal AFK
-    guilds = bot.guilds
-    if afk_channel_id != 0:
-        for g in guilds:
-            channel = g.get_channel(afk_channel_id)
+    if AFK_CHANNEL_ID != 0:
+        for g in bot.guilds:
+            channel = g.get_channel(AFK_CHANNEL_ID)
             if channel:
                 afk_member = await channel.connect()
                 afk_start = time.time()
@@ -60,38 +67,41 @@ async def on_ready():
     await bot.tree.sync()
     print("Slash commands sincronizados.")
 
-# ===== MENSAJES =====
 @bot.event
 async def on_message(message):
     if message.author.bot or not message.guild:
         return
+
+    # Aquí puedes mantener tu código AFK original si tenía algún comando de mensajes
+    # Ejemplo: mostrar tiempo AFK, responder "AFK", etc.
+    # Si no tienes nada, esta sección queda vacía y se usa para la defensa
+
+    # ===== DEFENSA =====
+    guild_id = str(message.guild.id)
+    user_id = message.author.id
+    now = time.time()
 
     # Ignorar admins
     if message.author.guild_permissions.administrator:
         await bot.process_commands(message)
         return
 
-    user_id = message.author.id
-    guild_id = str(message.guild.id)
-    now = time.time()
-
-    # ===== ANTI SPAM =====
+    # --- Anti spam ---
     if user_id not in spam_map:
         spam_map[user_id] = []
     spam_map[user_id].append(now)
     spam_map[user_id] = [t for t in spam_map[user_id] if now - t < 5]
-
     if len(spam_map[user_id]) >= 6:
         await message.author.timeout(discord.utils.utcnow() + timedelta(seconds=10))
         await message.channel.send(f"⚠️ {message.author.mention} spam detectado.")
         log(message.guild, f"Spam detectado: {message.author}")
         spam_map[user_id] = []
 
-    # ===== ANTI MASS MENTION =====
+    # --- Anti mass mention ---
     if len(message.mentions) >= 5:
         await message.reply("⚠️ No menciones a tantas personas.")
 
-    # ===== ANTI LINKS =====
+    # --- Anti links ---
     if link_regex.search(message.content):
         whitelist = data.get(guild_id, {}).get("whitelist", [])
         if not any(domain in message.content for domain in whitelist):
@@ -105,12 +115,10 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-# ===== ANTI RAID =====
 @bot.event
 async def on_member_join(member):
     guild_id = str(member.guild.id)
     now = time.time()
-
     if guild_id not in join_map:
         join_map[guild_id] = []
     join_map[guild_id].append(now)
@@ -121,16 +129,16 @@ async def on_member_join(member):
             await member.guild.system_channel.send("🚨 Posible RAID detectado.")
         log(member.guild, "🚨 Posible RAID detectado.")
 
-    # AUTOROLE
+    # --- Autorole ---
     if guild_id in data and "autorole" in data[guild_id]:
         role = member.guild.get_role(data[guild_id]["autorole"])
         if role:
             await member.add_roles(role)
 
-# ===== ANTI NUKE =====
 @bot.event
 async def on_guild_channel_create(channel):
     await handle_channel(channel.guild)
+
 @bot.event
 async def on_guild_channel_delete(channel):
     await handle_channel(channel.guild)
@@ -146,14 +154,6 @@ async def handle_channel(guild):
         if guild.system_channel:
             await guild.system_channel.send("🚨 Posible NUKE detectado.")
         log(guild, "🚨 Posible NUKE detectado.")
-
-# ===== LOGS =====
-def log(guild, mensaje):
-    guild_id = str(guild.id)
-    if guild_id in data and "logs" in data[guild_id]:
-        channel = guild.get_channel(data[guild_id]["logs"])
-        if channel:
-            bot.loop.create_task(channel.send(f"📜 {mensaje}"))
 
 # ===== SLASH COMMANDS =====
 @bot.tree.command(name="announce", description="Anunciar en un canal")
@@ -203,8 +203,7 @@ async def afk_timer():
     global afk_start
     if afk_start:
         elapsed = int(time.time() - afk_start)
-        # Aquí puedes usar el tiempo para mostrarlo en algún embed o logs si quieres
-        # print(f"Tiempo AFK: {elapsed} segundos")
+        # Aquí puedes usar elapsed si quieres mostrar el tiempo AFK en logs o embed
 afk_timer.start()
 
 bot.run(TOKEN)
